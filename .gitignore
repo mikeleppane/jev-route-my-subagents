@@ -1,0 +1,7 @@
+# Local design docs and issue files; never commit
+docs/design/
+.scratch/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,69 @@
+{
+  "tiers": [
+    {
+      "name": "fast",
+      "alias": "haiku",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "criteria": "Lookup, search, listing, reading, extraction, summaries and classification. No edits, or purely mechanical ones such as renames, version bumps and replacing one value with another."
+    },
+    {
+      "name": "balanced",
+      "alias": "sonnet",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "criteria": "Specified edits, a local fix whose cause is known, work whose tests already exist."
+    },
+    {
+      "name": "strong",
+      "alias": "opus",
+      "efforts": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "criteria": "Unknown-cause debugging, design, cross-file judgment, review of risky code."
+    }
+  ],
+  "efforts": [
+    {
+      "name": "low",
+      "criteria": "Quick, easy or exploratory work where a first pass is enough."
+    },
+    {
+      "name": "medium",
+      "criteria": "Regular implementation, such as a new feature with clear requirements."
+    },
+    {
+      "name": "high",
+      "criteria": "Verification matters or edge cases are likely, such as a bug fix in existing code."
+    },
+    {
+      "name": "xhigh",
+      "criteria": "Many hidden edge cases, or security and data consequences."
+    }
+  ],
+  "instructions": {
+    "tier": "Choose the least costly model tier that can complete this coding-agent task safely.",
+    "effort": "Choose the least reasoning effort that can complete this coding-agent task safely."
+  },
+  "rules": {
+    "Explore": [
+      "fast",
+      "low"
+    ]
+  },
+  "escalation": [
+    "strong",
+    "xhigh"
+  ]
+}

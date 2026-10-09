@@ -1,0 +1,54 @@
+default_stages: [pre-commit]
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: pyrefly
+        name: pyrefly
+        entry: uv run pyrefly check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: gitleaks
+        name: gitleaks (staged)
+        entry: bash -c 'docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git --pre-commit --staged --redact /repo'
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: private-patterns
+        name: private patterns (staged diff)
+        entry: bash -c 'f="${XDG_CONFIG_HOME:-$HOME/.config}/jev-route-my-subagents/private-patterns"; [ -f "$f" ] || exit 0; git diff --cached -U0 | grep -nEi -f <(grep -v "^[[:space:]]*$" "$f"); case $? in 0) echo "private pattern in staged diff"; exit 1;; 1) exit 0;; *) exit 2;; esac'
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: private-patterns-msg
+        name: private patterns (commit message)
+        entry: bash -c 'f="${XDG_CONFIG_HOME:-$HOME/.config}/jev-route-my-subagents/private-patterns"; [ -f "$f" ] || exit 0; grep -nEi -f <(grep -v "^[[:space:]]*$" "$f") "$1"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac' --
+        language: system
+        stages: [commit-msg]
+      - id: conventional-commit
+        name: Conventional Commits header
+        entry: '\A(?=[^\n]{1,72}(\n|\Z))(feat|fix|docs|test|refactor|perf|build|ci|chore|revert)\((hook|router|policy|plugin|skill|tests|docs|ci|deps|repo)\)!?: \S'
+        language: pygrep
+        args: [--negate, --multiline]
+        stages: [commit-msg]
+      - id: no-ai-attribution
+        name: no AI attribution
+        entry: '(?i)(co-authored-by:.*(claude|anthropic|copilot|gpt)|generated (with|by) .*(claude|ai))'
+        language: pygrep
+        stages: [commit-msg]
