@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.14,<3.15"
+# dependencies = ["requests==2.34.2", "pyyaml==6.0.3"]
+# ///
 """PreToolUse hook on Agent: route each dispatch it may change. Always fails open."""
 
 import time
@@ -6,11 +10,13 @@ _STARTED = time.monotonic()
 
 import hashlib  # noqa: E402 - latency counts from before the imports
 import json  # noqa: E402 - latency counts from before the imports
+import os  # noqa: E402 - latency counts from before the imports
 import sys  # noqa: E402 - latency counts from before the imports
 import threading  # noqa: E402 - latency counts from before the imports
+from contextlib import suppress  # noqa: E402 - latency counts from before the imports
 from datetime import UTC, datetime  # noqa: E402 - latency counts from before the imports
 from pathlib import Path  # noqa: E402 - latency counts from before the imports
-from typing import TYPE_CHECKING  # noqa: E402 - latency counts from before the imports
+from typing import TYPE_CHECKING, NoReturn  # noqa: E402 - latency counts from before the imports
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -200,3 +206,49 @@ def decide(
         "error": None if error is None else error_text(error),
     }
     return (out if error is None else None), record
+
+
+def append_log(path: Path, record: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    line = (json.dumps(record) + "\n").encode("ascii")
+    if len(line) >= MAX_LINE:
+        raise ValueError("log line too long")
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, line)  # one O_APPEND write under 4 KiB: parallel dispatches never interleave
+    finally:
+        os.close(fd)
+
+
+def run_hook() -> NoReturn:
+    with suppress(BaseException):  # fail open: nothing may stop the exit below
+        out, record = decide(sys.stdin.buffer.read(), os.environ, _STARTED + BUDGET_S)
+        if out is not None:
+            sys.stdout.write(out + "\n")
+            sys.stdout.flush()  # the route is committed here; the record is telemetry
+        data = os.environ.get("CLAUDE_PLUGIN_DATA")
+        if record is not None and data:
+            with suppress(BaseException):
+                append_log(Path(data, "decisions.jsonl"), record)
+    os._exit(0)  # a worker thread still blocked in a socket cannot delay exit
+
+
+def main(argv: list[str]) -> int:
+    match argv:
+        case []:
+            run_hook()
+        case ["--warm"]:
+            return 0  # uv installing the locked dependencies is the whole effect
+        case ["--stats", path]:
+            import router  # noqa: PLC0415 - only this mode needs it at the top level
+
+            sys.stdout.write(json.dumps(router.stats(Path(path)), indent=1) + "\n")
+            return 0
+        case _:
+            sys.stderr.write("usage: route_hook.py [--warm | --stats PATH]\n")
+            return 1  # never 2: exit 2 on PreToolUse blocks the dispatch
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
