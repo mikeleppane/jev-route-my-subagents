@@ -3,12 +3,21 @@
 import json
 import math
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
+
+import yaml
 
 MARKERS = ("escalate", "model-pinned")
 EFFORT_NAMES = ("low", "medium", "high", "xhigh")
 ALIASES = ("haiku", "sonnet", "opus", "fable")
+BUILT_IN_AGENTS = frozenset(
+    {"general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide"}
+)
+ROUTED = frozenset({"escalate", "rules", "jev"})
+MAX_FRONTMATTER = 1_000_000  # bytes read per agent file; the body is never needed
 POLICY_PATH = Path(__file__).with_name("policy.json")
 _HEADER = re.compile(r"\s*(?:\[(?:escalate|model-pinned)\]\s*)+")
 _MARKER = re.compile(r"\[(escalate|model-pinned)\]")
@@ -154,3 +163,124 @@ def clamp_effort(effort: str, supported: list[str], order: list[str]) -> str | N
         return None
     want = order.index(effort)
     return min(supported, key=lambda e: (abs(order.index(e) - want), -order.index(e)))
+
+
+@dataclass(frozen=True)
+class Dispatch:
+    subagent_type: str
+    description: str
+    prompt: str
+    cwd: Path | None
+    home: Path
+
+
+@dataclass(frozen=True)
+class Scores:
+    tier: float
+    effort: float
+    tier_confidence: float
+    effort_confidence: float
+
+
+@dataclass(frozen=True)
+class Route:
+    source: str  # pinned | unresolved | escalate | rules | jev
+    prompt: str  # without the control header
+    tier: str | None = None
+    alias: str | None = None
+    effort: str | None = None
+    tier_score: float | None = None
+    effort_score: float | None = None
+    tier_confidence: float | None = None
+    effort_confidence: float | None = None
+    flags: tuple[str, ...] = ()
+
+
+type AskJev = Callable[[str, Policy], Scores]
+
+
+def read_frontmatter(path: Path) -> dict[str, object] | None:
+    try:
+        with path.open("rb") as f:
+            head = f.read(MAX_FRONTMATTER)
+        if len(head) == MAX_FRONTMATTER:
+            head = head[: head.rfind(b"\n") + 1]  # never split a UTF-8 character
+        lines = head.decode("utf-8").splitlines()
+        if not lines or lines[0].strip() != "---":
+            return None
+        end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+        if end is None:
+            return None
+        data = yaml.safe_load("\n".join(lines[1:end]))
+    except OSError, UnicodeDecodeError, yaml.YAMLError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def agent_models(name: str, cwd: Path | None, home: Path) -> list[object]:
+    walk: list[Path] = (
+        [cwd, *cwd.parents] if cwd is not None and cwd.is_absolute() and cwd.is_dir() else []
+    )
+    roots = dict.fromkeys([*(d / ".claude/agents" for d in walk), home / ".claude/agents"])
+    models: list[object] = []
+    for root in roots:
+        try:
+            paths = sorted(root.rglob("*.md"))
+        except OSError:
+            continue  # one unreadable directory must not hide the others
+        for path in paths:
+            meta = read_frontmatter(path)
+            if meta is not None and meta.get("name") == name:
+                models.append(meta.get("model"))
+    return models
+
+
+def pin_source(subagent_type: str, cwd: Path | None, home: Path) -> str | None:
+    if ":" in subagent_type:
+        return "unresolved"
+    if subagent_type == "fork":
+        return "pinned"
+    models = agent_models(subagent_type, cwd, home)
+    if any(isinstance(m, str) and m and m != "inherit" for m in models):
+        return "pinned"
+    if not models and subagent_type not in BUILT_IN_AGENTS:
+        return "unresolved"
+    return None
+
+
+def classify(dispatch: Dispatch, policy: Policy, ask_jev: AskJev) -> Route:
+    markers, body = parse_header(dispatch.prompt)
+    if "model-pinned" in markers:
+        pin = "pinned"
+    else:
+        pin = pin_source(dispatch.subagent_type, dispatch.cwd, dispatch.home)
+    if pin:
+        flags = ("escalate_ignored",) if "escalate" in markers else ()
+        return Route(pin, body, flags=flags)
+    tiers, efforts = policy["tiers"], [e["name"] for e in policy["efforts"]]
+    scores = None
+    if "escalate" in markers:
+        source, (tier_name, effort) = "escalate", policy["escalation"]
+    elif dispatch.subagent_type in policy["rules"]:
+        source, (tier_name, effort) = "rules", policy["rules"][dispatch.subagent_type]
+    else:
+        state = (
+            f"subagent_type: {dispatch.subagent_type}\n"
+            f"description: {dispatch.description}\n\n{body}"
+        )
+        scores = ask_jev(state, policy)
+        source = "jev"
+        tier_name = tiers[level(scores.tier, len(tiers))]["name"]
+        effort = efforts[level(scores.effort, len(efforts))]
+    tier = next(t for t in tiers if t["name"] == tier_name)
+    return Route(
+        source,
+        body,
+        tier=tier_name,
+        alias=tier["alias"],
+        effort=clamp_effort(effort, tier["efforts"], efforts),
+        tier_score=None if scores is None else scores.tier,
+        effort_score=None if scores is None else scores.effort,
+        tier_confidence=None if scores is None else scores.tier_confidence,
+        effort_confidence=None if scores is None else scores.effort_confidence,
+    )

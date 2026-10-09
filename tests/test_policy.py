@@ -30,6 +30,7 @@ def test_header_markers_and_stripping() -> None:
     assert parse_header("[escalate] [escalate]\nb")[0] == frozenset({"escalate"})
     assert parse_header("[escalate]\r\nb") == (frozenset({"escalate"}), "b")
     assert parse_header("[escalate]") == (frozenset({"escalate"}), "")
+    assert parse_header("\n[escalate]\nx") == (frozenset(), "\n[escalate]\nx")
 
 
 @pytest.mark.parametrize(
