@@ -37,8 +37,15 @@ models, some without effort support.
    claude plugin install jev-route-my-subagents@jev-route-my-subagents
    ```
 
-3. Enter your TypeSafe API key when Claude Code prompts for it. The plugin option is marked
-   sensitive.
+3. Set your TypeSafe API key. The install does not prompt for it; in Claude Code, run:
+
+   ```text
+   /plugin configure jev-route-my-subagents@jev-route-my-subagents
+   ```
+
+   The option is marked sensitive: Claude Code masks the input and keeps the key in its secure
+   credential store, not in `settings.json`. Do not pass the key with `--config KEY=VALUE`: it
+   would land in your shell history.
 
 ## Privacy
 
@@ -48,9 +55,9 @@ models, some without effort support.
 - Nothing is sent to LangSmith or any other tracer.
 - The local decision record stores only a SHA-256 hash of the prompt, never the prompt itself.
 - Do not export `TYPESAFE_API_KEY` in your shell: every Bash command the model runs can read it.
-  Use the plugin prompt instead. The hook reads `TYPESAFE_API_KEY` only as a fallback when the
-  plugin option is empty. Whether the plugin option is visible to Bash tool commands is not yet
-  verified.
+  Use the plugin option instead. The hook reads `TYPESAFE_API_KEY` only as a fallback when the
+  plugin option is empty. The plugin option is not visible to Bash tool commands (checked on
+  Claude Code 2.1.295).
 
 ## Routing
 

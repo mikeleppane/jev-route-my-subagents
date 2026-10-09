@@ -30,7 +30,9 @@ Sources: [plugin manifest reference](https://code.claude.com/docs/en/plugins-ref
   `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `CLAUDE_PROJECT_DIR` and `CLAUDE_PLUGIN_OPTION_<KEY>`
   in their environment.
 - The path variables are not in the environment of Bash tool commands. The docs do not say whether
-  `CLAUDE_PLUGIN_OPTION_<KEY>` is; the plan's marketplace-install step checks it.
+  `CLAUDE_PLUGIN_OPTION_<KEY>` is; on 2.1.295 a subagent's Bash saw none (observed 2026-10-09).
+- `claude plugin install` does not prompt for `userConfig`; it says to run `/plugin configure
+  <id>` in Claude Code or pass `--config KEY=VALUE` (observed on 2.1.295).
 
 ## Hooks
 
