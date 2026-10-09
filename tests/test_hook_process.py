@@ -5,6 +5,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -100,6 +101,36 @@ def test_symlinked_log_refused_route_still_emitted(
     assert code == 0
     assert routed(out)["model"] == "opus"
     assert target.read_text(encoding="utf-8") == "keep\n"
+
+
+def test_fifo_log_never_blocks_exit(payload: Payload, env: dict[str, str], data_dir: Path) -> None:
+    data_dir.mkdir()
+    os.mkfifo(data_dir / "decisions.jsonl")  # no reader: a blocking open would never return
+    start = time.monotonic()
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=payload(prompt=ESCALATE),
+        capture_output=True,
+        env={"PATH": os.environ["PATH"], **env},
+        timeout=10,
+        check=False,
+    )
+    took = time.monotonic() - start
+    assert done.returncode == 0
+    assert routed(done.stdout.decode())["model"] == "opus"
+    assert took < 5  # well under the 10 s timeout and the 5 s hook timeout
+
+
+def test_append_log_refuses_non_regular_file(tmp_path: Path) -> None:
+    path = tmp_path / "decisions.jsonl"
+    os.mkfifo(path)
+    reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)  # a reader lets the open succeed
+    try:
+        with pytest.raises(ValueError, match="not a regular file"):
+            append_log(path, {"source": "jev"})
+        assert os.read(reader, route_hook.MAX_LINE) == b""
+    finally:
+        os.close(reader)
 
 
 def test_log_failure_still_routes(

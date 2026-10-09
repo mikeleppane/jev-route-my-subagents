@@ -261,7 +261,7 @@ def classify(dispatch: Dispatch, policy: Policy, ask_jev: AskJev) -> Route:
     else:
         pin = pin_source(dispatch.subagent_type, dispatch.cwd, dispatch.home)
     if pin:
-        flags = ("escalate_ignored",) if "escalate" in markers else ()
+        flags = ("escalate_ignored",) if pin == "pinned" and "escalate" in markers else ()
         return Route(pin, body, flags=flags)
     tiers, efforts = policy["tiers"], [e["name"] for e in policy["efforts"]]
     scores = None

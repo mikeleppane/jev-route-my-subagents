@@ -11,6 +11,7 @@ _STARTED = time.monotonic()
 import hashlib  # noqa: E402 - latency counts from before the imports
 import json  # noqa: E402 - latency counts from before the imports
 import os  # noqa: E402 - latency counts from before the imports
+import stat  # noqa: E402 - latency counts from before the imports
 import sys  # noqa: E402 - latency counts from before the imports
 import threading  # noqa: E402 - latency counts from before the imports
 from contextlib import suppress  # noqa: E402 - latency counts from before the imports
@@ -73,7 +74,8 @@ def policy_path(env: Mapping[str, str]) -> Path:
 
     data = env.get("CLAUDE_PLUGIN_DATA")
     path = Path(data, "policy.json") if data else None
-    return path if path is not None and path.is_file() else router.POLICY_PATH
+    # present at all (a directory or a dangling symlink too): load_policy reports it as invalid
+    return path if path is not None and path.exists(follow_symlinks=False) else router.POLICY_PATH
 
 
 def _load(raw: bytes) -> dict[str, object]:
@@ -213,8 +215,12 @@ def append_log(path: Path, record: dict[str, object]) -> None:
     line = (json.dumps(record) + "\n").encode("ascii")
     if len(line) >= MAX_LINE:
         raise ValueError("log line too long")
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    # O_NONBLOCK: a FIFO without a reader fails with ENXIO instead of blocking the exit
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    fd = os.open(path, flags, 0o600)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("log is not a regular file")
         os.fchmod(fd, 0o600)
         os.write(fd, line)  # one O_APPEND write under 4 KiB: parallel dispatches never interleave
     finally:

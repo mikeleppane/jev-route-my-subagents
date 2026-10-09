@@ -241,6 +241,25 @@ def test_invalid_override_fails_open(payload: Payload, env: dict[str, str], data
     assert str(rec["error"]).startswith("PolicyError")
 
 
+@pytest.mark.parametrize("kind", ["directory", "dangling-symlink"])
+def test_present_non_file_override_fails_open(
+    payload: Payload, env: dict[str, str], data_dir: Path, kind: str
+) -> None:
+    data_dir.mkdir()
+    path = data_dir / "policy.json"
+    if kind == "directory":
+        path.mkdir()
+    else:
+        path.symlink_to(data_dir / "absent.json")
+    out, rec = decide(payload(subagent_type="Explore"), env, far())
+    assert out is None
+    assert rec is not None
+    assert (rec["source"], rec["error"]) == (
+        "error",
+        "PolicyError: policy file unreadable or not JSON",
+    )
+
+
 def test_fail_open_cases(
     payload: Payload, env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

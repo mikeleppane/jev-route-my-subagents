@@ -107,6 +107,11 @@ def test_escalate_on_pinned_sets_flag(tmp_path: Path, policy: Policy) -> None:
         assert route.alias is None
 
 
+def test_escalate_on_unresolved_sets_no_flag(tmp_path: Path, policy: Policy) -> None:
+    route = classify(dispatch(tmp_path, "plug:agent", "[escalate]\nb"), policy, never)
+    assert (route.source, route.flags) == ("unresolved", ())
+
+
 def test_escalate_beats_rules(tmp_path: Path, policy: Policy) -> None:
     route = classify(dispatch(tmp_path, "Explore", "[escalate]\nfind it"), policy, never)
     assert (route.source, route.tier, route.alias, route.effort, route.prompt) == (
