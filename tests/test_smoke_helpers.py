@@ -31,6 +31,18 @@ def no_subprocess(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
     raise AssertionError("no child process expected")
 
 
+@pytest.fixture(autouse=True)
+def no_managed_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point the managed settings at absent paths: tests never read this machine's settings."""
+    monkeypatch.setattr(smoke, "MANAGED_FILE", tmp_path / "absent-managed.json")
+    monkeypatch.setattr(smoke, "MANAGED_DIR", tmp_path / "absent-managed.d")
+
+
+def agent_hook_config(command: str) -> str:
+    entry = {"matcher": "Agent", "hooks": [{"type": "command", "command": command}]}
+    return json.dumps({"hooks": {"PreToolUse": [entry]}})
+
+
 def test_read_key_file_mode(tmp_path: Path) -> None:
     path = tmp_path / "typesafe.key"
     path.write_text(KEY + "\n", encoding="utf-8")
@@ -181,6 +193,138 @@ def test_double_route_never_passes_unverified(
     assert double_route(monkeypatch, tmp_path, hook, listing) == expected
 
 
+@pytest.mark.parametrize("where", ["file", "drop-in"])
+def test_double_route_managed_hook_routes_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, where: str
+) -> None:
+    drop_ins = tmp_path / "managed.d"
+    drop_ins.mkdir()
+    path = tmp_path / "managed.json" if where == "file" else drop_ins / "10-route.json"
+    path.write_text(agent_hook_config("managed-router"), encoding="utf-8")
+    ran: list[list[str]] = []
+
+    def fake(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "claude":
+            return completed("[]")
+        ran.append(argv)
+        return completed(ROUTES)
+
+    monkeypatch.setattr(smoke, "SETTINGS", ())
+    monkeypatch.setattr(smoke, "MANAGED_FILE", tmp_path / "managed.json")
+    monkeypatch.setattr(smoke, "MANAGED_DIR", drop_ins)
+    monkeypatch.setattr(smoke, "results", [])
+    monkeypatch.setattr(smoke.subprocess, "run", fake)
+
+    smoke.check_double_route()
+
+    assert smoke.results == ["FAIL"]
+    assert ran == [["sh", "-c", "managed-router"]]
+
+
+def other_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hook: subprocess.CompletedProcess[str],
+    manifest: dict[str, object],
+    enabled: bool = True,
+) -> list[tuple[list[str], dict[str, str]]]:
+    """Run `check_double_route` with one other plugin whose Agent hook gives `hook`.
+
+    Returns each hook run's argv and env.
+    """
+    root = tmp_path / "other"
+    (root / "hooks").mkdir(parents=True)
+    (root / ".claude-plugin").mkdir()
+    (root / "hooks" / "hooks.json").write_text(
+        agent_hook_config("${CLAUDE_PLUGIN_ROOT}/route.sh"), encoding="utf-8"
+    )
+    (root / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+    listing = json.dumps(
+        [
+            {"id": f"{smoke.PLUGIN}@market", "enabled": False, "projectEnabled": False},
+            {
+                "id": "other@market",
+                "enabled": enabled,
+                "projectEnabled": False,
+                "installPath": str(root),
+            },
+        ]
+    )
+    ran: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake(argv: list[str], env: dict[str, str], **_: object) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "claude":
+            return completed(listing)
+        ran.append((argv, env))
+        return hook
+
+    for name in ("TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_PLUGIN_OPTION_TOKEN"):
+        monkeypatch.setenv(name, KEY)
+    monkeypatch.setattr(smoke, "SETTINGS", ())
+    monkeypatch.setattr(smoke, "results", [])
+    monkeypatch.setattr(smoke.subprocess, "run", fake)
+    smoke.check_double_route()
+    return ran
+
+
+@pytest.mark.parametrize(
+    ("hook", "manifest", "expected"),
+    [
+        (completed(ROUTES), {"name": "other"}, "FAIL"),
+        (completed("{}"), {"name": "other"}, "PASS"),
+        (completed("{}"), {"name": "other", "hooks": "./more-hooks.json"}, "INCONCLUSIVE"),
+        (completed(ROUTES), {"name": "other", "hooks": {"PreToolUse": []}}, "FAIL"),
+    ],
+    ids=["routes", "clean", "extra-hooks-path", "extra-hooks-and-routes"],
+)
+def test_double_route_runs_other_plugin_hooks_without_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hook: subprocess.CompletedProcess[str],
+    manifest: dict[str, object],
+    expected: str,
+) -> None:
+    ran = other_plugin(monkeypatch, tmp_path, hook, manifest)
+
+    assert smoke.results == [expected]
+    root = str(tmp_path / "other")
+    assert {tuple(argv) for argv, _ in ran} == {("sh", "-c", f"{root}/route.sh")}
+    assert all(env["CLAUDE_PLUGIN_ROOT"] == root for _, env in ran)
+    assert all(KEY not in env.values() for _, env in ran)
+
+
+def test_double_route_skips_disabled_plugin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ran = other_plugin(monkeypatch, tmp_path, completed(ROUTES), {"name": "other"}, enabled=False)
+
+    assert smoke.results == ["PASS"]
+    assert ran == []
+
+
+def test_full_run_stops_before_paid_checks_unless_double_route_passes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[:3] == ["claude", "plugin", "list"]:
+            return completed(LISTED_PROJECT)  # this plugin is enabled: double-route FAILs
+        raise AssertionError(f"no other child process expected: {argv[:2]}")
+
+    monkeypatch.setattr(smoke, "SETTINGS", ())
+    monkeypatch.setattr(smoke, "results", [])
+    monkeypatch.setattr(smoke.subprocess, "run", fake)
+
+    assert smoke.main(["--skip-jev"]) == 1
+
+    assert [argv[:3] for argv in calls] == [["claude", "plugin", "list"]]
+    expected = ["FAIL", *["SKIP"] * len(smoke.PREFLIGHT_CHECKS + smoke.FULL_CHECKS)]
+    assert smoke.results == expected
+    assert "SKIP jev: double-route did not pass\n" in capsys.readouterr().out
+
+
 def routed_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -272,7 +416,9 @@ def test_child_failure_never_prints_key(
     key_file.write_text(KEY + "\n", encoding="utf-8")
     key_file.chmod(0o600)
 
-    def fake(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+    def fake(argv: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if argv[:3] == ["claude", "plugin", "list"]:
+            return completed("[]")  # double-route passes, so the paid checks run
         return completed(f"stdout {KEY}", 1, f"Error: bad key {KEY}")
 
     monkeypatch.setattr(smoke, "SETTINGS", ())
