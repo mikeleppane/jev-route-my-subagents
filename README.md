@@ -13,7 +13,6 @@ on cheap models, which stretches your Claude Max quota.
 - Linux (tested) or macOS (expected to work, untested). On Windows the hook passes every dispatch
   through unchanged.
 - Claude Code 2.1.295 or later (the version the live smoke last passed on).
-- Claude Code <!-- filled after the smoke (Task 10) -->
 - A TypeSafe API key for Jev.
 
 Tested with the Anthropic API alias mapping (Claude Max). Other providers map the aliases to older
@@ -39,7 +38,7 @@ models, some without effort support.
    ```
 
 3. Enter your TypeSafe API key when Claude Code prompts for it. The plugin option is marked
-   sensitive. <!-- filled after the smoke (Task 10) -->
+   sensitive.
 
 ## Privacy
 
