@@ -19,6 +19,7 @@ BUILT_IN_AGENTS = frozenset(
 ROUTED = frozenset({"escalate", "rules", "jev"})
 MAX_FRONTMATTER = 1_000_000  # bytes read per agent file; the body is never needed
 POLICY_PATH = Path(__file__).with_name("policy.json")
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
 _HEADER = re.compile(r"\s*(?:\[(?:escalate|model-pinned)\]\s*)+")
 _MARKER = re.compile(r"\[(escalate|model-pinned)\]")
 _MIN_LEVELS = 2
@@ -27,6 +28,10 @@ _MAX_NAME = 32
 
 class PolicyError(ValueError):
     pass
+
+
+class JevError(Exception):
+    """A failed Jev call; the message never holds request or response content."""
 
 
 class Level(TypedDict):
@@ -284,3 +289,63 @@ def classify(dispatch: Dispatch, policy: Policy, ask_jev: AskJev) -> Route:
         tier_confidence=None if scores is None else scores.tier_confidence,
         effort_confidence=None if scores is None else scores.effort_confidence,
     )
+
+
+def _number(answer: dict[object, object], key: str, low: float, high: float) -> float:
+    value = answer.get(key.rpartition(".")[2])
+    try:
+        number = (
+            float(value)
+            if isinstance(value, int | float) and not isinstance(value, bool)
+            else math.nan
+        )
+    except OverflowError:  # a JSON integer beyond float range
+        number = math.nan
+    if not (math.isfinite(number) and low <= number <= high):
+        raise JevError(f"{key} invalid")
+    return number
+
+
+def jev_asker(api_key: str, timeout: tuple[float, float] = (1.0, 2.0)) -> AskJev:
+    import requests  # noqa: PLC0415 - only the Jev path pays the import
+
+    def ask(state: str, policy: Policy) -> Scores:
+        questions = {
+            key: {
+                "type": "score",
+                "instructions": policy["instructions"][key],
+                "criteria": [f"{x['name']}: {x['criteria']}" for x in levels],
+            }
+            for key, levels in (("tier", policy["tiers"]), ("effort", policy["efforts"]))
+        }
+        # One attempt: a retry after 429 or 529 would spend the hook's deadline.
+        response = requests.post(
+            JEV_URL,
+            json={"state": state, "model": "jev-latest", "questions": questions},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+            allow_redirects=False,  # a redirect would resend the prompt to another host
+        )
+        if response.status_code != 200:  # noqa: PLR2004 - HTTP OK
+            raise JevError(f"status {response.status_code}")
+        try:
+            body = response.json()
+        except ValueError:
+            raise JevError("body invalid") from None  # the decode error holds the body
+        if not isinstance(body, dict):
+            raise JevError("body invalid")
+        given = body.get("answers")
+        found: dict[object, object] = given if isinstance(given, dict) else {}
+        scores: list[float] = []
+        for key in ("tier", "effort"):
+            answer = found.get(key)
+            if not isinstance(answer, dict):
+                raise JevError(f"answers.{key} invalid")
+            scores += [
+                _number(answer, f"answers.{key}.score", -math.inf, math.inf),
+                _number(answer, f"answers.{key}.confidence", 0, 1),
+            ]
+        tier, tier_confidence, effort, effort_confidence = scores
+        return Scores(tier, effort, tier_confidence, effort_confidence)
+
+    return ask
