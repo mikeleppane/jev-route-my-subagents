@@ -30,6 +30,11 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: no-doc-placeholders
+        name: no placeholder comments in docs
+        entry: '<!--\s*(TODO|TBD|filled after)'
+        language: pygrep
+        types: [markdown]
       - id: private-patterns
         name: private patterns (staged diff)
         entry: bash -c 'f="${XDG_CONFIG_HOME:-$HOME/.config}/jev-route-my-subagents/private-patterns"; [ -f "$f" ] || exit 0; git diff --cached -U0 | grep -nEi -f <(grep -v "^[[:space:]]*$" "$f"); case $? in 0) echo "private pattern in staged diff"; exit 1;; 1) exit 0;; *) exit 2;; esac'
