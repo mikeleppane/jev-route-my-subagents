@@ -3,10 +3,11 @@
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import yaml
 
@@ -349,3 +350,80 @@ def jev_asker(api_key: str, timeout: tuple[float, float] = (1.0, 2.0)) -> AskJev
         return Scores(tier, effort, tier_confidence, effort_confidence)
 
     return ask
+
+
+def _confidence(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def stats(path: Path) -> dict[str, object]:
+    total = malformed = 0
+    counts: dict[str, Counter[str]] = {
+        "tier": Counter(),
+        "effort": Counter(),
+        "source": Counter(),
+    }
+    confidence_tier_total = 0.0
+    confidence_effort_total = 0.0
+    confidence_n = 0
+    override_count = 0
+    override_n = 0
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    for line in lines:
+        try:
+            raw: object = cast("object", json.loads(line))
+        except ValueError:
+            raw = None
+        if not isinstance(raw, dict):
+            malformed += 1
+            continue
+        record = cast("dict[str, object]", raw)
+        total += 1
+        for key, counter in counts.items():
+            value = record.get(key)
+            counter["none" if value is None else str(value)] += 1
+
+        source = record.get("source")
+        if source == "jev":
+            tier_confidence = _confidence(record.get("tier_confidence"))
+            effort_confidence = _confidence(record.get("effort_confidence"))
+            if tier_confidence is not None and effort_confidence is not None:
+                confidence_tier_total += tier_confidence
+                confidence_effort_total += effort_confidence
+                confidence_n += 1
+
+        if (
+            isinstance(source, str)
+            and source in ROUTED
+            and "requested_model" in record
+            and "requested_effort" in record
+        ):
+            override_n += 1
+            requested_model = record["requested_model"]
+            requested_effort = record["requested_effort"]
+            if (requested_model is not None and requested_model != record.get("alias")) or (
+                requested_effort is not None and requested_effort != record.get("effort")
+            ):
+                override_count += 1
+
+    sources = counts["source"]
+    confidence: dict[str, float | int | None] = {
+        "tier_mean": confidence_tier_total / confidence_n if confidence_n else None,
+        "effort_mean": confidence_effort_total / confidence_n if confidence_n else None,
+        "n": confidence_n,
+    }
+    return {
+        "total": total,
+        "malformed": malformed,
+        **{key: dict(counter) for key, counter in counts.items()},
+        "escalation_rate": sources["escalate"] / total if total else 0.0,
+        "error_rate": sources["error"] / total if total else 0.0,
+        "confidence": confidence,
+        "overrides": {"count": override_count, "n": override_n},
+    }
