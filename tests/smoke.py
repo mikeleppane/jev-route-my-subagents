@@ -42,7 +42,6 @@ MANAGED_FILE = (
     else Path("/etc/claude-code/managed-settings.json")
 )
 MANAGED_DIR = None if sys.platform == "darwin" else Path("/etc/claude-code/managed-settings.d")
-ROOT_VAR = "${CLAUDE_PLUGIN_ROOT}"
 PLUGIN = "jev-route-my-subagents"
 CONTEXT_MARK = "Subagent routing (jev-route-my-subagents)"
 OFF_VAR = "JEV_ROUTE_MY_SUBAGENTS"
@@ -50,9 +49,7 @@ KEY_VARS = ("TYPESAFE_API_KEY", "CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY")
 PLUGIN_FLAGS = ("--plugin-dir", str(REPO))
 MAX_OVERHEAD_S = 1.5
 OVERHEAD_RUNS = 5
-_SECRET_NAME = re.compile(
-    r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|^CLAUDE_PLUGIN_OPTION_", re.IGNORECASE
-)
+HOOK_VARS = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "LANG")
 _TRANSIENT = re.compile(
     r"JevError: status (?:429|5\d\d)|ConnectTimeout|ReadTimeout|ConnectionError|Deadline: .*"
 )
@@ -174,8 +171,9 @@ def child_env(**extra: str) -> dict[str, str]:
 
 
 def hook_env(**extra: str) -> dict[str, str]:
-    """`child_env` without any variable named like a key: no hook the preflight runs gets one."""
-    return {k: v for k, v in child_env(**extra).items() if not _SECRET_NAME.search(k)}
+    """Only `HOOK_VARS`, `LC_*` and `extra`: no hook the preflight runs gets a key or a secret."""
+    kept = {k: v for k, v in os.environ.items() if k in HOOK_VARS or k.startswith("LC_")}
+    return {**kept, **extra}
 
 
 def instruction(calls: list[dict[str, str]]) -> str:
@@ -276,16 +274,43 @@ def agent_hooks(config: object) -> list[Json]:
     return found
 
 
-def with_root(hook: Json, root: str) -> Json:
-    """`hook` with `${CLAUDE_PLUGIN_ROOT}` replaced by `root` in `command` and `args`."""
+def with_plugin_vars(hook: Json, values: dict[str, str]) -> Json:
+    """`hook` with each `${NAME}` of `values` replaced by its value in `command` and `args`."""
 
     def sub(value: object) -> object:
-        return value.replace(ROOT_VAR, root) if isinstance(value, str) else value
+        if not isinstance(value, str):
+            return value
+        for name, replacement in values.items():
+            value = value.replace(f"${{{name}}}", replacement)
+        return value
 
     expanded: Json = {**hook, "command": sub(hook.get("command"))}
     if isinstance(args := hook.get("args"), list):
         expanded["args"] = [sub(a) for a in args]
     return expanded
+
+
+def plugin_hook_sources(root: Path, manifest: object) -> tuple[list[Path | Json], bool]:
+    """A plugin's `hooks/hooks.json` and the hook configs its `plugin.json` adds, each file once.
+
+    A `hooks` value is a path relative to `root`, a list of them, an inline event map or an inline
+    `{"hooks": ...}` config. The flag is False for any other shape and for a path that is not a
+    file in `root`.
+    """
+    sources: list[Path | Json] = [(root / "hooks" / "hooks.json").resolve()]
+    declared: object = manifest.get("hooks", []) if isinstance(manifest, dict) else []
+    if isinstance(declared, dict):
+        config: Json = declared if "hooks" in declared else {"hooks": declared}
+        events = config["hooks"]
+        valid = isinstance(events, dict) and all(isinstance(e, list) for e in events.values())
+        return [*sources, config], valid
+    for value in declared if isinstance(declared, list) else [declared]:
+        path = (root / value).resolve() if isinstance(value, str) else None
+        if path is None or not path.is_relative_to(root.resolve()) or not path.is_file():
+            return sources, False
+        if path not in sources:
+            sources.append(path)
+    return sources, True
 
 
 def hook_emits(hook: Json, env: dict[str, str]) -> tuple[bool | None, str]:
@@ -400,11 +425,12 @@ def settings_paths() -> tuple[list[Path], str | None]:
 def check_double_route() -> None:
     """FAIL on any route found; INCONCLUSIVE when anything could not be inspected; else PASS.
 
-    Inspects user, project, local and managed settings and every other enabled plugin's
-    `hooks/hooks.json`. Hooks run without any key, so one that routes only with a key passes.
+    Inspects user, project, local and managed settings and, for every other enabled plugin,
+    `hooks/hooks.json` and the hooks its `plugin.json` declares. Hooks get only basic variables,
+    the project dir and, for a plugin, its root and data dir; one that routes only with a key or
+    another secret passes.
     """
     project = str(Path.cwd())
-    env = hook_env(CLAUDE_PROJECT_DIR=project)
     found: list[str] = []
     routes = unverified = False
 
@@ -423,40 +449,47 @@ def check_double_route() -> None:
             unknown(f"{path}: unverified (unreadable: {type(e).__name__})")
             return None
 
-    def inspect(path: Path, run_env: dict[str, str], root: str | None = None) -> None:
+    def inspect(where: object, config: object, plugin_vars: dict[str, str]) -> None:
         nonlocal routes, unverified
-        for hook in agent_hooks(load(path)):
+        run_env = hook_env(CLAUDE_PROJECT_DIR=project, **plugin_vars)
+        for hook in agent_hooks(config):
             label = text(hook.get("command")) or "?"
-            emitted, note = hook_emits(hook if root is None else with_root(hook, root), run_env)
+            emitted, note = hook_emits(with_plugin_vars(hook, plugin_vars), run_env)
             routes |= emitted is True
             unverified |= emitted is None
-            found.append(f"{path}: [{label[:80]}] {note}")
+            found.append(f"{where}: [{label[:80]}] {note}")
 
     paths, failure = settings_paths()
     if failure:
         unknown(failure)
     for path in paths:
-        inspect(path, env)
-    listing, failure = plugin_listing(env)
+        inspect(path, load(path), {})
+    listing, failure = plugin_listing(child_env())
     installed = plugin_enabled(listing)
     shape = "unverified (unknown listing shape)" if installed is None else str(installed)
     found.append(f"installed {PLUGIN} enabled={failure or shape}")
     for entry in listing if installed is not None and isinstance(listing, list) else []:
         if PLUGIN in plugin_names(entry) or not is_on(entry):
             continue
-        name = text(entry.get("id")) or "?"
-        root = text(entry.get("installPath"))
-        if not root:
-            unknown(f"plugin {name}: unverified (no installPath)")
+        name, root = text(entry.get("id")), text(entry.get("installPath"))
+        if not name or not root:
+            unknown(f"plugin {name or '?'}: unverified (no id or installPath)")
             continue
-        manifest = load(Path(root, ".claude-plugin", "plugin.json"))
-        if isinstance(manifest, dict) and "hooks" in manifest:
-            unknown(f"plugin {name}: unverified (plugin.json declares hooks)")
-        inspect(
-            Path(root, "hooks", "hooks.json"),
-            hook_env(CLAUDE_PROJECT_DIR=project, CLAUDE_PLUGIN_ROOT=root),
-            root,
+        # the documented data dir: the id with each character outside [A-Za-z0-9_-] as `-`
+        plugin_vars = {
+            "CLAUDE_PLUGIN_ROOT": root,
+            "CLAUDE_PLUGIN_DATA": str(PLUGIN_DATA / re.sub(r"[^A-Za-z0-9_-]", "-", name)),
+        }
+        sources, supported = plugin_hook_sources(
+            Path(root), load(Path(root, ".claude-plugin", "plugin.json"))
         )
+        if not supported:
+            unknown(f"plugin {name}: unverified (unsupported plugin.json hooks)")
+        for source in sources:
+            if isinstance(source, Path):
+                inspect(source, load(source), plugin_vars)
+            else:
+                inspect(f"plugin {name} plugin.json", source, plugin_vars)
     if routes or installed:
         status = "FAIL"
     else:

@@ -178,8 +178,8 @@ The live smoke test reads each spawned subagent's `*.meta.json`. That file shows
 effort Claude Code recorded for the subagent, not the model's own report of what it is, and is the
 evidence that routing took effect.
 
-The smoke's double-route check runs the other `Agent` hooks without any API key, so a router that
-only acts when it has a key can go undetected.
+The smoke's double-route check runs the other `Agent` hooks with only basic environment variables
+and no API key or other secret, so a router that only acts when it has one can go undetected.
 
 ## Development
 

@@ -221,6 +221,15 @@ def test_double_route_managed_hook_routes_fails(
     assert ran == [["sh", "-c", "managed-router"]]
 
 
+def plugin_root(tmp_path: Path, files: dict[str, str] | None = None) -> Path:
+    """The other plugin's root, created with `files` in it."""
+    root = tmp_path / "other"
+    root.mkdir(exist_ok=True)
+    for name, content in (files or {}).items():
+        (root / name).write_text(content, encoding="utf-8")
+    return root
+
+
 def other_plugin(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -228,22 +237,22 @@ def other_plugin(
     manifest: dict[str, object],
     enabled: bool = True,
 ) -> list[tuple[list[str], dict[str, str]]]:
-    """Run `check_double_route` with one other plugin whose Agent hook gives `hook`.
+    """Run `check_double_route` with one other plugin, at `plugin_root`, whose hooks give `hook`.
 
-    Returns each hook run's argv and env.
+    Returns each child run's argv and env, the `claude plugin list` run first.
     """
-    root = tmp_path / "other"
+    root = plugin_root(tmp_path)
     (root / "hooks").mkdir(parents=True)
     (root / ".claude-plugin").mkdir()
     (root / "hooks" / "hooks.json").write_text(
-        agent_hook_config("${CLAUDE_PLUGIN_ROOT}/route.sh"), encoding="utf-8"
+        agent_hook_config("${CLAUDE_PLUGIN_ROOT}/route.sh ${CLAUDE_PLUGIN_DATA}"), encoding="utf-8"
     )
     (root / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
     listing = json.dumps(
         [
             {"id": f"{smoke.PLUGIN}@market", "enabled": False, "projectEnabled": False},
             {
-                "id": "other@market",
+                "id": "other.v2@market",
                 "enabled": enabled,
                 "projectEnabled": False,
                 "installPath": str(root),
@@ -253,14 +262,13 @@ def other_plugin(
     ran: list[tuple[list[str], dict[str, str]]] = []
 
     def fake(argv: list[str], env: dict[str, str], **_: object) -> subprocess.CompletedProcess[str]:
-        if argv[0] == "claude":
-            return completed(listing)
         ran.append((argv, env))
-        return hook
+        return completed(listing) if argv[0] == "claude" else hook
 
-    for name in ("TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_PLUGIN_OPTION_TOKEN"):
+    for name in ("TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_PLUGIN_OPTION_TOKEN", "DB_URL"):
         monkeypatch.setenv(name, KEY)
     monkeypatch.setattr(smoke, "SETTINGS", ())
+    monkeypatch.setattr(smoke, "PLUGIN_DATA", tmp_path / "data")
     monkeypatch.setattr(smoke, "results", [])
     monkeypatch.setattr(smoke.subprocess, "run", fake)
     smoke.check_double_route()
@@ -272,10 +280,9 @@ def other_plugin(
     [
         (completed(ROUTES), {"name": "other"}, "FAIL"),
         (completed("{}"), {"name": "other"}, "PASS"),
-        (completed("{}"), {"name": "other", "hooks": "./more-hooks.json"}, "INCONCLUSIVE"),
         (completed(ROUTES), {"name": "other", "hooks": {"PreToolUse": []}}, "FAIL"),
     ],
-    ids=["routes", "clean", "extra-hooks-path", "extra-hooks-and-routes"],
+    ids=["routes", "clean", "extra-hooks-and-routes"],
 )
 def test_double_route_runs_other_plugin_hooks_without_keys(
     monkeypatch: pytest.MonkeyPatch,
@@ -284,13 +291,87 @@ def test_double_route_runs_other_plugin_hooks_without_keys(
     manifest: dict[str, object],
     expected: str,
 ) -> None:
-    ran = other_plugin(monkeypatch, tmp_path, hook, manifest)
+    listed, *ran = other_plugin(monkeypatch, tmp_path, hook, manifest)
 
     assert smoke.results == [expected]
-    root = str(tmp_path / "other")
-    assert {tuple(argv) for argv, _ in ran} == {("sh", "-c", f"{root}/route.sh")}
+    root, data = str(tmp_path / "other"), str(tmp_path / "data" / "other-v2-market")
+    assert {tuple(argv) for argv, _ in ran} == {("sh", "-c", f"{root}/route.sh {data}")}
     assert all(env["CLAUDE_PLUGIN_ROOT"] == root for _, env in ran)
+    assert all(env["CLAUDE_PLUGIN_DATA"] == data for _, env in ran)
+    assert not (tmp_path / "data").exists()
+    # only basic variables reach a foreign hook: no key, whatever its name
+    allowed = {*smoke.HOOK_VARS, "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA"}
+    assert all(set(env) <= allowed | {k for k in env if k.startswith("LC_")} for _, env in ran)
     assert all(KEY not in env.values() for _, env in ran)
+    # our own `claude plugin list` gets the child environment
+    assert listed[0][0] == "claude"
+    assert listed[1]["DB_URL"] == KEY
+    assert "TYPESAFE_API_KEY" not in listed[1]
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        ("./extra.json", ["route.sh", "extra.sh"]),
+        (["./extra.json", "inline.json"], ["route.sh", "extra.sh", "inline.sh"]),
+        ("./hooks/hooks.json", ["route.sh"]),
+        (
+            {"PreToolUse": [{"matcher": "Agent", "hooks": [{"type": "command", "command": "m"}]}]},
+            ["route.sh", "m"],
+        ),
+        (json.loads(agent_hook_config("w")), ["route.sh", "w"]),
+    ],
+    ids=["path", "path-list", "default-path-once", "inline-event-map", "inline-wrapped"],
+)
+def test_double_route_runs_plugin_json_hooks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declared: object, expected: list[str]
+) -> None:
+    root = plugin_root(
+        tmp_path,
+        {
+            "extra.json": agent_hook_config("${CLAUDE_PLUGIN_ROOT}/extra.sh"),
+            "inline.json": agent_hook_config("${CLAUDE_PLUGIN_ROOT}/inline.sh"),
+        },
+    )
+    manifest = {"name": "other", "hooks": declared}
+    _, *ran = other_plugin(monkeypatch, tmp_path, completed("{}"), manifest)
+
+    assert smoke.results == ["PASS"]
+    commands = [argv[-1].split()[0].removeprefix(f"{root}/") for argv, _ in ran]
+    assert commands == [c for c in expected for _ in smoke.DISPATCHES]
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        "../outside.json",
+        "./absent.json",
+        ["./extra.json", 7],
+        7,
+        None,
+        {"hooks": None},
+        {"PreToolUse": {"matcher": "Agent"}},
+    ],
+    ids=[
+        "outside-root",
+        "absent",
+        "list-with-non-path",
+        "number",
+        "null",
+        "wrapper-null",
+        "event-not-list",
+    ],
+)
+def test_double_route_unsupported_plugin_json_hooks_inconclusive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, declared: object
+) -> None:
+    (tmp_path / "outside.json").write_text(agent_hook_config("outside"), encoding="utf-8")
+    plugin_root(tmp_path, {"extra.json": agent_hook_config("extra")})
+    manifest = {"name": "other", "hooks": declared}
+
+    other_plugin(monkeypatch, tmp_path, completed("{}"), manifest)
+
+    assert smoke.results == ["INCONCLUSIVE"]
 
 
 def test_double_route_skips_disabled_plugin(
@@ -299,7 +380,7 @@ def test_double_route_skips_disabled_plugin(
     ran = other_plugin(monkeypatch, tmp_path, completed(ROUTES), {"name": "other"}, enabled=False)
 
     assert smoke.results == ["PASS"]
-    assert ran == []
+    assert [argv[0] for argv, _ in ran] == ["claude"]
 
 
 def test_full_run_stops_before_paid_checks_unless_double_route_passes(
