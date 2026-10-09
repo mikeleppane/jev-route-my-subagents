@@ -1,28 +1,12 @@
 # jev-route-my-subagents
 
-Opus 5.5 orchestrates, Jev routes your subagents.
+Opus orchestrates, Jev routes your subagents.
 
 A Claude Code plugin with one `PreToolUse` hook on the `Agent` tool. The hook examines every
 dispatch (one `Agent` call that starts one subagent) and routes each one it may change to a model
 alias (`haiku`, `sonnet`, `opus`) and an effort (`low`, `medium`, `high`, `xhigh`). The main
 session model is never touched, so the main session's prompt cache stays intact. Cheap work runs
 on cheap models, which stretches your Claude Max quota.
-
-## Status
-
-Alpha. There are no savings claims yet. Effort routing relies on Claude Code applying an `effort`
-field that a hook writes into the `Agent` input; that field is not in the hooks documentation and a
-Claude Code release may change or drop it.
-
-## Prior art
-
-- Main-turn routers choose the model for the main conversation: `gargpratyush/jev-router`,
-  `dirien/jev-router` and `alexei-led/claude-router`, which leaves subagents unchanged.
-- Subagent routing that depends on the main model following instructions:
-  `DefensiveSniper/jev-subagent-router` and `kerpopule/hermes-jev-skills`.
-
-This plugin is a hook: it sees every dispatch, needs no cooperation from the main model, and fails
-open.
 
 ## Requirements
 
@@ -183,7 +167,22 @@ and no API key or other secret, so a router that only acts when it has one can g
 
 ## Development
 
-See [`AGENTS.md`](AGENTS.md).
+```sh
+uv sync
+prek install
+prek install --hook-type commit-msg
+uv run ruff format && uv run ruff check && uv run pyrefly check && uv run pytest
+```
+
+The live smoke is manual and costs a few small model runs. Run it after each Claude Code upgrade,
+with `--preflight` first:
+
+```sh
+uv run python tests/smoke.py --preflight
+uv run python tests/smoke.py
+```
+
+Contributor and agent rules: [`AGENTS.md`](AGENTS.md).
 
 ## License
 
