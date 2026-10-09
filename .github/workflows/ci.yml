@@ -19,6 +19,14 @@ jobs:
       - run: uv run pyrefly check
       - run: uv run pytest -q
 
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # the Claude Code version the live smoke last passed on (README, Requirements)
+      - run: npm install -g @anthropic-ai/claude-code@2.1.295
+      - run: claude plugin validate --strict .
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:

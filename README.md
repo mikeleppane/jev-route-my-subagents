@@ -6,7 +6,7 @@ A Claude Code plugin with one `PreToolUse` hook on the `Agent` tool. The hook ex
 dispatch (one `Agent` call that starts one subagent) and routes each one it may change to a model
 alias (`haiku`, `sonnet`, `opus`) and an effort (`low`, `medium`, `high`, `xhigh`). The main
 session model is never touched, so the main session's prompt cache stays intact. Cheap work runs
-on cheap models, which stretches your Claude Max quota.
+on cheaper models, so your plan's usage limits or your API spend go further.
 
 ## Requirements
 
@@ -46,6 +46,17 @@ models, some without effort support.
    The option is marked sensitive: Claude Code masks the input and keeps the key in its secure
    credential store, not in `settings.json`. Do not pass the key with `--config KEY=VALUE`: it
    would land in your shell history.
+
+## Update
+
+Auto-update is off for this marketplace by default. Update by hand:
+
+```sh
+claude plugin update jev-route-my-subagents@jev-route-my-subagents
+```
+
+Or turn on auto-update for the marketplace under `/plugin`, Marketplaces. A new version loads at the
+next session start or after `/reload-plugins`.
 
 ## Privacy
 
