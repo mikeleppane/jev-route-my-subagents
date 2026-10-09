@@ -1,0 +1,18 @@
+{
+  "name": "jev-route-my-subagents",
+  "version": "0.1.0",
+  "description": "Route subagent dispatches to a model tier and effort",
+  "author": {
+    "name": "mikeleppane"
+  },
+  "repository": "https://github.com/mikeleppane/jev-route-my-subagents",
+  "license": "MIT",
+  "userConfig": {
+    "typesafe_api_key": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Your TypeSafe API key. It is sent only to TypeSafe.",
+      "sensitive": true
+    }
+  }
+}

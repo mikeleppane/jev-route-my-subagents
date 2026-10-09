@@ -1,0 +1,40 @@
+{
+  "description": "Route subagent dispatches to a model tier and effort",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": ["run", "--no-config", "--locked", "--script", "${CLAUDE_PLUGIN_ROOT}/scripts/route_hook.py"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-context.json"]
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv",
+            "args": ["run", "--no-config", "--locked", "--script", "${CLAUDE_PLUGIN_ROOT}/scripts/route_hook.py", "--warm"],
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

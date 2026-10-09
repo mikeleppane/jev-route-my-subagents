@@ -1,0 +1,14 @@
+{
+  "name": "jev-route-my-subagents",
+  "description": "Route subagent dispatches to a model tier and effort",
+  "owner": {
+    "name": "mikeleppane"
+  },
+  "plugins": [
+    {
+      "name": "jev-route-my-subagents",
+      "source": "./",
+      "description": "Route subagent dispatches to a model tier and effort"
+    }
+  ]
+}

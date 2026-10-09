@@ -1,0 +1,6 @@
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "Subagent routing (jev-route-my-subagents): a hook routes each Agent dispatch to a model tier and effort. Line 1 of a prompt is a control header only when it holds nothing but markers; routed prompts have it removed.\n- [model-pinned]: keep the model and effort you pass, e.g. when the user asks for a specific model.\n- [escalate]: route to the policy's escalation tier (default strong/opus, xhigh). Use it at most once per task, only after diagnosing a capability failure: wrong approach, missed edge cases, gave up on a hard step. If the escalated attempt fails, stop and report. Never escalate permission, infrastructure, missing-context or unclear-requirement failures; fix the cause or report it.\n- Each routed dispatch adds a note \"Router <id>: <tier> (<alias>, effort <effort>).\" Name that tier when you report delegated work."
+  }
+}
